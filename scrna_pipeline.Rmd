@@ -1,0 +1,509 @@
+---
+title: "scrna_pipeline"
+author: "Cheryl Gu"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load required libraries
+library(Seurat)# For scRNA-seq data analysis and visualization
+library(scater)          # For quality control and visualization of single-cell RNA-seq data
+library(scran)           # For normalization and other utility functions for scRNA-seq data
+library(clustifyr)       # For automatic cell lineage annotation
+library(fgsea)           # For Gene Set Enrichment Analysis (GSEA)
+library(GSVA)            # For Gene Set Variation Analysis (GSVA)
+library(scRepertoire)    # For TCR repertoire analysis
+library(dplyr)   
+library(Matrix)
+library(harmony)
+library(msigdbr)
+library(data.table)
+library(readr)
+library(stringr)
+library(SingleR)
+library(SummarizedExperiment)
+library(biomaRt)
+```
+
+```{r}
+# load the 10X count data and metadata and create the Seurat object
+df_meta <- readr::read_tsv("~/Downloads/SOCS1/GSE237569_series_matrix.txt", skip = 25)
+# Check the dimensions and column names
+print(dim(df_meta))
+print(colnames(df_meta))
+
+# Helper function to replace the header with the first row
+replace_header_w_first_row <- function(df) {
+  new_header <- as.character(df[1, ])
+  df <- df[-1, ]
+  colnames(df) <- new_header
+  return(df)
+}
+
+df_meta <- t(df_meta[c(1, 7, 9, 10, 11, 12), ])
+df_meta <- as.data.frame(df_meta)
+df_meta <- cbind(index = rownames(df_meta), df_meta)
+rownames(df_meta) <- NULL
+
+df_meta <- replace_header_w_first_row(df_meta)
+df_meta<- df_meta[,-4]
+df_meta_filtered <- df_meta %>%
+  filter(grepl("GEX", `!Sample_title`))
+
+# Define paths to the directories
+olfactory_tumor_1_2_dir <- "~/Downloads/SOCS1/raw/GSM7628229_Olfactory_tumor_1_2"
+pd_1_tumor_1_2_dir <- "~/Downloads/SOCS1/raw/GSM7628230_PD_1_tumor_1_2"
+olfactory_tumor_4_5_dir <- "~/Downloads/SOCS1/raw/GSM7628238_Olfactory_tumor_4_5"
+ksq_001_tumor_1_2_dir <- "~/Downloads/SOCS1/raw/GSM7628237_KSQ001_tumor_1_2"
+ksq_001_tumor_4_5_dir <- "~/Downloads/SOCS1/raw/GSM7628227_KSQ001_tumor_4_5"
+
+# Read the data and create Seurat objects
+olfactory_tumor_1_2 <- CreateSeuratObject(counts = Read10X(data.dir = olfactory_tumor_1_2_dir))
+pd_1_tumor_1_2 <- CreateSeuratObject(counts = Read10X(data.dir = pd_1_tumor_1_2_dir))
+olfactory_tumor_4_5 <- CreateSeuratObject(counts = Read10X(data.dir = olfactory_tumor_4_5_dir))
+ksq_001_tumor_1_2_dir <- CreateSeuratObject(counts = Read10X(data.dir = ksq_001_tumor_1_2_dir))
+ksq_001_tumor_4_5_dir <- CreateSeuratObject(counts = Read10X(data.dir = ksq_001_tumor_4_5_dir))
+```
+
+```{r}
+# Function to add metadata to a Seurat object based on Sample_title
+add_metadata_to_seurat <- function(seurat_obj, sample_title, df_meta_filtered) {
+  # Filter the metadata for the specific Sample_title
+  metadata <- df_meta_filtered %>%
+    filter(`!Sample_title` == sample_title)
+  
+  # Repeat the metadata to match the number of cells in the Seurat object
+  metadata <- metadata[rep(1, ncol(seurat_obj)), ]
+  
+  # Set the cell names as row names for the metadata
+  rownames(metadata) <- colnames(seurat_obj)
+  
+  # Add the metadata to the Seurat object
+  seurat_obj <- AddMetaData(seurat_obj, metadata = metadata)
+  
+  return(seurat_obj)
+}
+
+# Example usage:
+
+# Adding metadata to each Seurat object separately
+olfactory_tumor_1_2 <- add_metadata_to_seurat(olfactory_tumor_1_2, "Olfactory_tumor_1_2_GEX", df_meta_filtered)
+pd_1_tumor_1_2 <- add_metadata_to_seurat(pd_1_tumor_1_2, "PD_1_tumor_1_2_GEX", df_meta_filtered)
+olfactory_tumor_4_5 <- add_metadata_to_seurat(olfactory_tumor_4_5, "Olfactory_tumor_4_5_GEX", df_meta_filtered)
+ksq_001_tumor_1_2_dir <- add_metadata_to_seurat(ksq_001_tumor_1_2_dir, "KSQ_001_tumor_1_2_GEX", df_meta_filtered)
+ksq_001_tumor_4_5_dir <- add_metadata_to_seurat(ksq_001_tumor_4_5_dir, "KSQ_001_tumor_4_5_GEX", df_meta_filtered)
+
+# Inspecting one of the Seurat objects to verify metadata addition
+head(ksq_001_tumor_1_2_dir@meta.data)
+```
+
+```{r}
+# Merge the Seurat objects
+seurat <- merge(olfactory_tumor_1_2, y = c(pd_1_tumor_1_2, olfactory_tumor_4_5, 
+                                           ksq_001_tumor_1_2_dir, ksq_001_tumor_4_5_dir), 
+                       add.cell.ids = c("Olfactory_tumor_1_2", "PD_1_tumor_1_2", "Olfactory_tumor_4_5",
+                                        "KSQ_001_tumor_1_2", "KSQ_001_tumor_4_5"))
+dim(seurat@meta.data)
+```
+
+```{r}
+# Quality Control (didn't use scater)
+seurat[["percent_mito"]] <- PercentageFeatureSet(seurat, pattern = "^mt-")
+VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent_mito"), ncol = 3)
+seurat <- subset(seurat, subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & percent_mito < 15)
+dim(seurat)
+
+#Normalize the data
+seurat <- NormalizeData(seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+
+#Find variable features(genes)
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", nfeatures = 2000) 
+
+#Scale the data
+seurat <- ScaleData(seurat, do.scale  = TRUE, do.center = TRUE) 
+
+# Run PCA
+seurat <- RunPCA(seurat)
+
+# Determine max PC
+ElbowPlot(seurat, ndims =50, reduction = "pca")
+```
+```{r}
+# Run UMAP
+seurat <- RunUMAP(seurat, dims = 1:25)
+```
+
+```{r}
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(seurat), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(seurat)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot2
+```
+
+```{r}
+# Access batch effect
+#DimPlot(seurat, group.by = "!Sample_title", reduction = "umap")
+```
+
+```{r}
+FeaturePlot(seurat, "Ptprc", reduction = "umap")
+```
+
+```{r}
+# Step 1: Identify cells with non-zero expression for Ptprc
+ptprc_expression <- FetchData(seurat, vars = "Ptprc")
+
+# Step 2: Subset the Seurat object to keep only cells with Ptprc expression > 0
+seurat_filtered <- subset(seurat, cells = rownames(ptprc_expression)[ptprc_expression > 0])
+
+FeaturePlot(seurat_filtered, features = "Ptprc", reduction = "umap")
+```
+
+```{r}
+# seurat <- RunHarmony(seurat, "Sample_title")
+# seurat <- RunUMAP(seurat, dims = 1:17, reduction = "harmony", reduction.name = "umap_harmony")
+# DimPlot(seurat, reduction = "umap", group.by = "Sample_title")
+```
+
+```{r}
+# Clustering
+seurat_filtered <- FindNeighbors(seurat_filtered, dims = 1:30)
+seurat_filtered <- FindClusters(seurat_filtered, resolution = seq(0.1, 1, 0.1), algorithm = 1)
+```
+
+```{r}
+DimPlot(seurat_filtered, reduction = "umap", label = T, group.by = "RNA_snn_res.0.2") # 0.2 resolution works the best
+```
+
+```{r}
+# Load the expression matrix (CPM values)
+expression_matrix <- read.table("~/Downloads/Haemopedia-Mouse-RNASeq_cpm.txt", header = TRUE, row.names = 1, sep = "\t")
+
+# Load the sample table (metadata)
+sample_table <- read.table("~/Downloads/Haemopedia-Mouse-RNASeq_samples.txt", header = TRUE, sep = "\t")
+
+# Inspect the first few rows to ensure data loaded correctly
+head(expression_matrix)
+head(sample_table)
+```
+
+```{r}
+# Step 2: Use the correct column name for sample IDs
+# Ensure that the sample IDs in the expression matrix match those in the sample table
+sample_table <- sample_table[match(colnames(expression_matrix), sample_table$sampleId), ]
+ref_se <- SummarizedExperiment(
+  assays = list(logcounts = log1p(as.matrix(expression_matrix))),  # Log-transform the data
+  rowData = NULL,  # Optionally, you can include row data here if you have additional gene metadata
+  colData = sample_table
+)
+colData(ref_se)$label <- sample_table$cell_lineage
+colData(ref_se)$cell_type_label <- sample_table$cell.Type.Description
+```
+
+```{r}
+# Join all layers of the Seurat object
+joined_seurat <- JoinLayers(seurat_filtered, assay = "RNA")
+# Extract the 'counts' layer (or any other relevant layer)
+sce <- as.SingleCellExperiment(joined_seurat)
+metadata <- seurat_filtered@meta.data
+colData(sce) <- cbind(colData(sce), metadata)
+ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+gene_symbols <- rownames(sce)
+
+# Convert gene symbols to Ensembl IDs
+conversion_table <- getBM(
+  attributes = c("mgi_symbol", "ensembl_gene_id"),
+  filters = "mgi_symbol",
+  values = gene_symbols,
+  mart = ensembl
+)
+
+head(conversion_table)
+
+# Ensure that the gene symbols in sce match those in the conversion table
+common_genes <- intersect(gene_symbols, conversion_table$mgi_symbol)
+
+# Subset the SCE object to only include genes that have a corresponding Ensembl ID
+sce <- sce[common_genes, ]
+
+# Replace the rownames with Ensembl IDs
+rownames(sce) <- conversion_table$ensembl_gene_id[match(rownames(sce), conversion_table$mgi_symbol)]
+head(rownames(sce))
+
+pred <- SingleR(
+  test = sce,
+  ref = ref_se,
+  labels = ref_se$label
+)
+
+joined_seurat$SingleR_label <- pred$labels
+
+# Proceed with visualization or analysis
+DimPlot(joined_seurat, group.by = "SingleR_label")
+FeaturePlot(joined_seurat, features = "Cd3e", reduction = "umap")
+FeaturePlot(joined_seurat, features = "Cd4", reduction = "umap")
+FeaturePlot(joined_seurat, features = "Cd8a", reduction = "umap")
+```
+
+```{r}
+metadata_temp <- as.data.frame(joined_seurat@meta.data)
+lineage_frequencies_df <- metadata_temp %>%
+  group_by(X.Sample_characteristics_ch1, SingleR_label) %>%
+  summarise(Frequency = n()) %>%
+  group_by(X.Sample_characteristics_ch1) %>%
+  mutate(Fraction = Frequency / sum(Frequency)) %>%
+  ungroup()
+head(lineage_frequencies_df)
+```
+
+```{r}
+library(ggplot2)
+ggplot(lineage_frequencies_df, aes(x = X.Sample_characteristics_ch1, y = Fraction, fill = SingleR_label)) +
+  geom_bar(stat="identity", position=position_dodge()) +# Customize colors
+  labs(title = "Lineage Frequency by Treatment Group",
+       x = NULL,  # No label for x-axis
+       y = "Fraction of total cells per group",
+       fill = NULL) +  # No label for legend
+  theme_minimal()
+```
+
+```{r}
+t_cell_subset <- subset(joined_seurat, subset = SingleR_label == "T Cell Lineage")
+table(t_cell_subset$SingleR_label)
+```
+
+
+```{r}
+# Create a list of T cell signatures - Miller et.al
+t_cell_signatures <- list(
+  Effector_like = c("Cx3cr1", "Klf2", "Klrc1", "Klrd1", "Klrk1"),
+  Terminally_Exhausted = c("Cd160", "Cxcr6", "Ccl4", "Lag3", "Gzma"),
+  Progenitor_Exhausted = c("Xcl1", "Id3", "Slamf6", "Tcf7", "Il7r"),
+  Proliferating = c("Stmn1", "Top2a", "Hmgb2", "H2afz", "Tubb5"),
+  Naive_like = c("Ccr7", "Satb1", "Lef1", "Sell")
+)
+```
+
+```{r}
+# Re-cluster T cell subset
+#Normalize the data
+t_cell_subset <- NormalizeData(t_cell_subset, normalization.method = "LogNormalize", scale.factor = 10000)
+
+#Find variable features(genes)
+t_cell_subset <- FindVariableFeatures(t_cell_subset, selection.method = "vst", nfeatures = 2000) 
+
+#Scale the data
+t_cell_subset <- ScaleData(t_cell_subset, do.scale  = TRUE, do.center = TRUE) 
+
+# Run PCA
+t_cell_subset <- RunPCA(t_cell_subset)
+
+# Determine max PC
+ElbowPlot(t_cell_subset, ndims = 50, reduction = "pca");
+
+# Run UMAP
+t_cell_subset <- RunUMAP(t_cell_subset, dims = 1:25)
+```
+
+```{r}
+t_cell_subset <- FindNeighbors(t_cell_subset, dims = 1:25)
+t_cell_subset <- FindClusters(t_cell_subset, resolution = 0.1) 
+DimPlot(t_cell_subset, reduction = "umap", group.by = "seurat_clusters", label = TRUE, pt.size = 1)
+```
+
+```{r}
+# Find markers for each cluster
+top_markers <- FindAllMarkers(t_cell_subset, logfc.threshold = 1, test.use = "wilcox", only.pos=TRUE)
+top_10_markers <- top_markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC) %>%
+  arrange(cluster, desc(avg_log2FC)) %>%
+  ungroup() 
+top_10_markers
+```
+
+```{r}
+DoHeatmap(t_cell_subset, features = top_10_markers$gene)
+```
+
+```{r}
+sce <- as.SingleCellExperiment(t_cell_subset)
+metadata <- t_cell_subset@meta.data
+colData(sce) <- cbind(colData(sce), metadata)
+ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+gene_symbols <- rownames(sce)
+
+# Convert gene symbols to Ensembl IDs
+conversion_table <- getBM(
+  attributes = c("mgi_symbol", "ensembl_gene_id"),
+  filters = "mgi_symbol",
+  values = gene_symbols,
+  mart = ensembl
+)
+
+head(conversion_table)
+
+# Ensure that the gene symbols in sce match those in the conversion table
+common_genes <- intersect(gene_symbols, conversion_table$mgi_symbol)
+
+# Subset the SCE object to only include genes that have a corresponding Ensembl ID
+sce <- sce[common_genes, ]
+
+# Replace the rownames with Ensembl IDs
+rownames(sce) <- conversion_table$ensembl_gene_id[match(rownames(sce), conversion_table$mgi_symbol)]
+head(rownames(sce))
+
+pred <- SingleR(
+  test = sce,
+  ref = ref_se,
+  labels = ref_se$cell.Type.Description
+)
+
+t_cell_subset$SingleR_cell_type_label <- pred$labels
+
+# Proceed with visualization or analysis
+DimPlot(t_cell_subset, group.by = "SingleR_cell_type_label")
+```
+
+```{r}
+# Load TCR data from different samples
+# You may have a list of files for each sample
+tcr_files <- list.files("~/Downloads/SOCS1/GSE237569_RAW/", pattern = "contig_annotations.csv", full.names = TRUE)
+
+# Read in the TCR data for each sample
+tcr_data_list <- lapply(tcr_files, read.csv)
+
+# Combine TCR data across samples
+combined_tcr <- combineTCR(tcr_data_list, samples = c("KSQ_001_tumor_1_2_vdj", "KSQ_001_tumor_4_5_vdj", "Olfactory_tumor_1_2_vdj","Olfactory_tumor_4_5_vdj", "PD_1_tumor_1_2_vdj"))
+```
+
+```{r}
+# Inspect the first few barcodes in the Seurat object
+head(Cells(t_cell_subset))
+t_cell_subset$barcode<-Cells(t_cell_subset)
+head(t_cell_subset$barcode)
+# Inspect the first few barcodes in the combined TCR data
+head(combined_tcr[[1]]$barcode)
+```
+
+```{r}
+# Adjust the barcodes in the TCR data (run this first)
+combined_tcr <- lapply(combined_tcr, function(df) {
+  # Remove the "_vdj" part from the barcode, but keep everything else
+  df$barcode <- sub("_vdj", "", df$barcode)
+  return(df)
+})
+```
+
+```{r}
+all_tcr_barcodes <- unlist(lapply(combined_tcr, function(df) df$barcode))
+
+# Check the first few barcodes
+head(all_tcr_barcodes)
+
+# Extract barcodes from the Seurat object
+seurat_barcodes <- t_cell_subset$barcode
+
+# Check the first few barcodes in the Seurat object
+head(seurat_barcodes)
+
+# Find barcodes that are in TCR data but not in Seurat object
+missing_in_seurat <- setdiff(all_tcr_barcodes, seurat_barcodes)
+
+# Find barcodes that are in Seurat object but not in TCR data
+missing_in_tcr <- setdiff(seurat_barcodes, all_tcr_barcodes)
+
+# Display results
+print("Barcodes in TCR data but missing in Seurat object:")
+print(head(missing_in_seurat))
+
+print("Barcodes in Seurat object but missing in TCR data:")
+print(head(missing_in_tcr))
+
+# Print the number of matching barcodes
+matching_barcodes <- intersect(all_tcr_barcodes, seurat_barcodes)
+cat("Number of matching barcodes:", length(matching_barcodes), "\n")
+cat("Number of barcodes in Seurat object:", length(seurat_barcodes), "\n")
+cat("Number of barcodes in TCR data:", length(all_tcr_barcodes), "\n")
+```
+
+```{r}
+# Subset Seurat object to only include matching barcodes
+seurat_subset_tcr <- subset(t_cell_subset, cells = matching_barcodes)
+```
+
+```{r}
+joined_tcr <- combineExpression(combined_tcr, seurat_subset_tcr, cloneCall = "aa", group.by = "barcode")
+
+# Check to ensure that the TCR data is properly integrated
+head(joined_tcr@meta.data)
+```
+
+```{r}
+# Given from the paper,
+# The OT1 T cells can be identified by searching for the known TCR sequences:
+# 
+# TCRα CDR3 sequence: CAASDNYQLIW
+# TCRβ CDR3 sequence: CASSRANYEQYF
+
+# Filter the TCR data for cells that match the OT1 TCR sequences
+
+# If combined_tcr is still a list, combine it into a single data frame
+combined_tcr_df <- do.call(rbind, combined_tcr)
+
+# Check the structure of the combined TCR data
+colnames(combined_tcr_df)
+
+ot1_cells <- combined_tcr_df %>%
+  filter(cdr3_aa1 == "CAASDNYQLIW" & cdr3_aa2 == "CASSRANYEQYF") %>%
+  pull(barcode)
+```
+
+```{r}
+length(ot1_cells)
+```
+
+
+```{r}
+# Subset out the ot1 cells
+ot1_seurat <- subset(joined_tcr, cells = ot1_cells)
+# Check the dimensions of the OT1 Seurat object
+dim(ot1_seurat)
+
+# Inspect the metadata of the OT1 Seurat object
+head(ot1_seurat@meta.data)
+```
+
+```{r}
+# Create a new metadata column to label OT1 cells
+t_cell_subset$OT1 <- ifelse(Cells(t_cell_subset) %in% ot1_cells, "OT1", "Non-OT1")
+# UMAP plot with OT1 and Non-OT1 labeling
+DimPlot(t_cell_subset, reduction = "umap", group.by = "OT1", cols = c("gray", "red")) +
+  ggtitle("OT1 Clusters")
+
+```
+
+```{r}
+# Feature plots on T cell exhaustion signatures for t cell clusters
+FeaturePlot(t_cell_subset, features = "Mki67", reduction = "umap")
+FeaturePlot(t_cell_subset, features = "Slamf6", reduction = "umap")
+FeaturePlot(t_cell_subset, features = "Tcf7", reduction = "umap")
+FeaturePlot(t_cell_subset, features = "Sell", reduction = "umap")
+FeaturePlot(t_cell_subset, features = "Pdcd1", reduction = "umap")
+FeaturePlot(t_cell_subset, features = "Entpd1", reduction = "umap")
+FeaturePlot(t_cell_subset, features = "Tox", reduction = "umap")
+FeaturePlot(t_cell_subset, features = "Gzmb", reduction = "umap")
+FeaturePlot(t_cell_subset, features = "Cd8a", reduction = "umap")
+```
+
+```{r}
+
+```

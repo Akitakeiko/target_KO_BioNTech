@@ -1,0 +1,209 @@
+---
+title: "m2h_converion_degs"
+author: "Cheryl Gu"
+date: "2024-12-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(biomaRt)
+```
+
+```{r}
+degs_TIL_KO_WT <- read.csv("~/Downloads/DEGs.Reg1KO_Wei2019.tissue-genotype_TIL-KO_TIL-WT.csv")
+mouse_gene_ids <- degs_TIL_KO_WT$gene_symbol
+length(mouse_gene_ids)
+```
+
+```{r}
+convert_mouse_to_human_direct <- function(deg_file, mouse_column, human_dataset = "hsapiens_gene_ensembl", 
+                                          mouse_dataset = "mmusculus_gene_ensembl", host = "https://dec2021.archive.ensembl.org/") {
+  library(biomaRt)
+  
+  # Load DEG file
+  degs <- read.csv(deg_file)
+  mouse_gene_ids <- unique(degs[[mouse_column]])
+  
+  # Format gene symbols correctly
+  mouse_gene_ids <- stringr::str_to_sentence(mouse_gene_ids)
+  
+  # Initialize biomaRt
+  mouse <- useMart("ensembl", dataset = mouse_dataset, host = host)
+  
+  # Map mouse genes to human orthologs
+  mouse_to_human <- getBM(
+    attributes = c('ensembl_gene_id', 'external_gene_name', 'hsapiens_homolog_ensembl_gene', 'hsapiens_homolog_associated_gene_name'),
+    filters = 'external_gene_name',
+    values = mouse_gene_ids,
+    uniqueRows = TRUE,
+    mart = mouse
+  )
+  
+  if (nrow(mouse_to_human) == 0) {
+    stop("No human orthologs found for the given mouse genes.")
+  }
+  
+  # Select relevant columns and remove rows with missing human gene information
+  result <- mouse_to_human[, c("external_gene_name", "hsapiens_homolog_associated_gene_name")]
+  colnames(result) <- c("mouse_gene", "human_gene")
+  result <- result[!is.na(result$human_gene), ]
+  
+  return(result)
+}
+
+```
+
+```{r}
+# Define the function for filtering, converting, and saving
+process_deg_file <- function(input_file, output_file, mouse_column = "gene_symbol", 
+                             human_dataset = "hsapiens_gene_ensembl", 
+                             mouse_dataset = "mmusculus_gene_ensembl", 
+                             host = "https://dec2021.archive.ensembl.org/") {
+  library(biomaRt)
+  
+  # Load DEG file
+  degs <- read.csv(input_file)
+  
+  # Filter out rows with technical annotations (e.g., "__alignment_not_unique")
+  degs_filtered <- degs[!grepl("^__", degs[[mouse_column]]), ]
+  
+  # Initialize biomaRt
+  mouse <- useMart("ensembl", dataset = mouse_dataset, host = host)
+  
+  # Map mouse genes to human orthologs
+  mouse_to_human <- getBM(
+    attributes = c('ensembl_gene_id', 'external_gene_name', 'hsapiens_homolog_ensembl_gene', 'hsapiens_homolog_associated_gene_name'),
+    filters = 'external_gene_name',
+    values = unique(degs_filtered[[mouse_column]]),
+    uniqueRows = TRUE,
+    mart = mouse
+  )
+  
+  if (nrow(mouse_to_human) == 0) {
+    stop("No human orthologs found for the given mouse genes.")
+  }
+  
+  # Filter out blank cells and retain relevant columns
+  result <- mouse_to_human[, c("external_gene_name", "hsapiens_homolog_associated_gene_name")]
+  colnames(result) <- c("mouse_gene", "human_gene")
+  result <- result[result$human_gene != "", ]  # Remove blank human_gene rows
+  
+  # Merge with the original DEG dataset
+  degs_merged <- merge(degs_filtered, result, by.x = mouse_column, by.y = "mouse_gene", all.x = TRUE)
+  
+  # Save the merged dataset to a CSV file
+  write.csv(degs_merged, output_file, row.names = FALSE)
+}
+
+# List your input files and desired output file names
+files <- list(
+  list(input = "~/Downloads/DEGs.Reg1KO_Wei2019.tissue-genotype_TIL-KO_TIL-WT.csv", 
+       output = "~/Downloads/Converted_DEGs.Reg1KO_Wei2019.tissue-genotype_TIL-KO_TIL-WT.csv"),
+  list(input = "~/Downloads/DEGs.Reg1KO_Wei2019.tissue-genotype_TIL-KO_PLN-KO.csv", 
+       output = "~/Downloads/Converted_DEGs.Reg1KO_Wei2019.tissue-genotype_TIL-KO_PLN-KO.csv"),
+  list(input = "~/Downloads/DEGs.Reg1KO_Wei2019.tissue-genotype_PLN-KO_PLN-WT.csv", 
+       output = "~/Downloads/Converted_DEGs.Reg1KO_Wei2019.tissue-genotype_PLN-KO_PLN-WT.csv"),
+  list(input = "~/Downloads/lfc_before_m2h.csv", 
+       output = "~/Downloads/lfc_after_m2h.csv" )
+)
+
+# Process each file
+for (file in files) {
+  process_deg_file(input_file = file$input, output_file = file$output)
+}
+
+# Check the output
+print("Processing complete. Files saved to output paths.")
+
+```
+```{r}
+# Define the function for filtering, converting, counting, and saving
+process_deg_file_with_stats <- function(input_file, output_file, mouse_column = "gene_symbol", 
+                                        human_dataset = "hsapiens_gene_ensembl", 
+                                        mouse_dataset = "mmusculus_gene_ensembl", 
+                                        host = "https://dec2021.archive.ensembl.org/") {
+  library(biomaRt)
+  
+  # Load DEG file
+  degs <- read.csv(input_file)
+  
+  # Filter out rows with technical annotations (e.g., "__alignment_not_unique")
+  degs_filtered <- degs[!grepl("^__", degs[[mouse_column]]), ]
+  
+  # Initialize biomaRt
+  mouse <- useMart("ensembl", dataset = mouse_dataset, host = host)
+  
+  # Map mouse genes to human orthologs
+  mouse_to_human <- getBM(
+    attributes = c('ensembl_gene_id', 'external_gene_name', 'hsapiens_homolog_ensembl_gene', 'hsapiens_homolog_associated_gene_name'),
+    filters = 'external_gene_name',
+    values = unique(degs_filtered[[mouse_column]]),
+    uniqueRows = TRUE,
+    mart = mouse
+  )
+  
+  if (nrow(mouse_to_human) == 0) {
+    stop("No human orthologs found for the given mouse genes.")
+  }
+  
+  # Filter out blank cells and retain relevant columns
+  result <- mouse_to_human[, c("external_gene_name", "hsapiens_homolog_associated_gene_name")]
+  colnames(result) <- c("mouse_gene", "human_gene")
+  result <- result[result$human_gene != "", ]  # Remove blank human_gene rows
+  
+  # Merge with the original DEG dataset
+  degs_merged <- merge(degs_filtered, result, by.x = mouse_column, by.y = "mouse_gene", all.x = TRUE)
+  
+  # Count total DEGs and rows with NA in human_gene
+  total_degs <- nrow(degs_merged)
+  na_human_genes <- sum(is.na(degs_merged$human_gene))
+  
+  # Drop rows with NA in human_gene
+  degs_final <- degs_merged[!is.na(degs_merged$human_gene), ]
+  
+  # Save the final filtered dataset to a CSV file
+  write.csv(degs_final, output_file, row.names = FALSE)
+  
+  # Return stats
+  list(
+    total_degs = total_degs,
+    na_human_genes = na_human_genes,
+    final_degs = nrow(degs_final)
+  )
+}
+
+# List your input files and desired output file names
+files <- list(
+  list(input = "~/Downloads/DEGs.Reg1KO_Wei2019.tissue-genotype_TIL-KO_TIL-WT.csv", 
+       output = "~/Downloads/Converted_DEGs.Reg1KO_Wei2019.tissue-genotype_TIL-KO_TIL-WT.csv"),
+  list(input = "~/Downloads/DEGs.Reg1KO_Wei2019.tissue-genotype_TIL-KO_PLN-KO.csv", 
+       output = "~/Downloads/Converted_DEGs.Reg1KO_Wei2019.tissue-genotype_TIL-KO_PLN-KO.csv"),
+  list(input = "~/Downloads/DEGs.Reg1KO_Wei2019.tissue-genotype_PLN-KO_PLN-WT.csv", 
+       output = "~/Downloads/Converted_DEGs.Reg1KO_Wei2019.tissue-genotype_PLN-KO_PLN-WT.csv"),
+  list(input = "~/Downloads/lfc_before_m2h.csv", 
+       output = "~/Downloads/lfc_after_m2h.csv" )
+)
+
+
+
+# Process each file and store stats
+stats <- lapply(files, function(file) {
+  process_deg_file_with_stats(input_file = file$input, output_file = file$output)
+})
+
+# Print the stats for each file
+for (i in seq_along(stats)) {
+  cat("File:", files[[i]]$input, "\n")
+  cat("  Total DEGs:", stats[[i]]$total_degs, "\n")
+  cat("  Rows with NA in human gene:", stats[[i]]$na_human_genes, "\n")
+  cat("  Final DEGs after filtering:", stats[[i]]$final_degs, "\n\n")
+}
+
+```
+
+
+
