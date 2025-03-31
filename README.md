@@ -15,8 +15,8 @@ This repository contains the analysis pipelines and sample codes for my thesis p
 ### Data
 Due to the sensitive nature of the data, this repository does not include raw datasets. Example datasets used are derived from public sources and serve as templates for the analysis pipelines.
 
-## Contributing
-While this project is primarily for my thesis, contributions or suggestions for improvements are welcome. Please open an issue to discuss potential changes or enhancements.
+### Thesis report
+The final thesis report is also uploaded for reference.
 
 ## Confidentiality Notice
 Please note that this repository contains masked data and altered references to comply with confidentiality agreements. The methodologies and analyses are designed to be reproducible with any publicly available dataset.
