@@ -8,7 +8,7 @@ This repository contains the analysis pipelines and sample codes for my thesis p
 ### Sample Analysis Codes
 - **Single-Cell RNA-Seq Data Analysis**: This pipeline processes single-cell RNA sequencing data to explore gene expression profiles in modified T cells. It includes steps for quality control, normalization, and differential expression analysis.
 
-- **Mouse to Human Gene Name Conversion**: A utility script for converting gene names from mouse nomenclature to corresponding human nomenclature, facilitating cross-species analysis and comparison.
+- **Mouse to Human Gene Name Conversion**: A utility script for converting gene names from mouse nomenclature to corresponding human nomenclature, with the differentially expressed genes (DEGs) data, used to facilitate cross-species analysis and comparison in gene expression.
 
 - **sgRNA Rank Plot Analysis**: An analysis tool for ranking sgRNAs based on their efficiency and effectiveness in gene editing, crucial for selecting optimal sgRNAs for knockout experiments.
 
