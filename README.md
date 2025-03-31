@@ -21,6 +21,3 @@ While this project is primarily for my thesis, contributions or suggestions for 
 ## Confidentiality Notice
 Please note that this repository contains masked data and altered references to comply with confidentiality agreements. The methodologies and analyses are designed to be reproducible with any publicly available dataset.
 
----
-
-This structure helps convey the necessary information while respecting the confidentiality requirements of your project. Adjust the content as needed to fit the specifics of your thesis or repository guidelines.
